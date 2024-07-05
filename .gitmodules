@@ -1,0 +1,3 @@
+[submodule "liveportrait"]
+	path = liveportrait
+	url = https://github.com/KwaiVGI/LivePortrait.git
