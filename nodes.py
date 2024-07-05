@@ -5,69 +5,31 @@ import numpy as np
 import folder_paths
 import comfy.model_management as mm
 import comfy.utils
+import cv2
+from pathlib import Path
+import pickle
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 
+from dataclasses import asdict
 
-from .liveportrait.config.argument_config import ArgumentConfig
-from .liveportrait.config.crop_config import CropConfig
-from .liveportrait.config.inference_config import InferenceConfig
-from .liveportrait.live_portrait_pipeline import LivePortraitPipeline
-from .liveportrait.utils.cropper import Cropper
-from .liveportrait.modules.spade_generator import SPADEDecoder
-from .liveportrait.modules.warping_network import WarpingNetwork
-from .liveportrait.modules.motion_extractor import MotionExtractor
-from .liveportrait.modules.appearance_feature_extractor import (
+from .liveportrait.src.utils.camera import get_rotation_matrix
+from .liveportrait.src.config.argument_config import ArgumentConfig
+from .liveportrait.src.config.crop_config import CropConfig
+from .liveportrait.src.config.inference_config import InferenceConfig
+
+from .patch import LivePortraitPipeline, Cropper, apply_config
+from .liveportrait.src.modules.spade_generator import SPADEDecoder
+from .liveportrait.src.modules.warping_network import WarpingNetwork
+from .liveportrait.src.modules.motion_extractor import MotionExtractor
+from .liveportrait.src.modules.appearance_feature_extractor import (
     AppearanceFeatureExtractor,
 )
-from .liveportrait.modules.stitching_retargeting_network import (
+from .liveportrait.src.modules.stitching_retargeting_network import (
     StitchingRetargetingNetwork,
 )
 
 
-class InferenceConfig:
-    def __init__(
-        self,
-        mask_crop=None,
-        flag_use_half_precision=True,
-        flag_lip_zero=True,
-        lip_zero_threshold=0.03,
-        flag_eye_retargeting=False,
-        flag_lip_retargeting=False,
-        flag_stitching=True,
-        flag_relative=True,
-        anchor_frame=0,
-        input_shape=(256, 256),
-        output_format="mp4",
-        output_fps=30,
-        crf=15,
-        flag_write_result=True,
-        flag_pasteback=True,
-        flag_write_gif=False,
-        size_gif=256,
-        ref_max_shape=1280,
-        ref_shape_n=2,
-        device_id=0,
-        flag_do_crop=True,
-        flag_do_rot=True,
-    ):
-        self.flag_use_half_precision = flag_use_half_precision
-        self.flag_lip_zero = flag_lip_zero
-        self.lip_zero_threshold = lip_zero_threshold
-        self.flag_eye_retargeting = flag_eye_retargeting
-        self.flag_lip_retargeting = flag_lip_retargeting
-        self.flag_stitching = flag_stitching
-        self.flag_relative = flag_relative
-        self.anchor_frame = anchor_frame
-        self.input_shape = input_shape
-        self.flag_write_result = flag_write_result
-        self.flag_pasteback = flag_pasteback
-        self.ref_max_shape = ref_max_shape
-        self.ref_shape_n = ref_shape_n
-        self.device_id = device_id
-        self.flag_do_crop = flag_do_crop
-        self.flag_do_rot = flag_do_rot
-        self.mask_crop = mask_crop
 
 
 # class CropConfig:
@@ -142,7 +104,7 @@ class DownloadAndLoadLivePortraitModels:
             )
 
         model_config_path = os.path.join(
-            script_directory, "liveportrait", "config", "models.yaml"
+            script_directory, "liveportrait", "src", "config", "models.yaml"
         )
         with open(model_config_path, "r") as file:
             model_config = yaml.safe_load(file)
@@ -238,15 +200,17 @@ class DownloadAndLoadLivePortraitModels:
             "lip": retargetor_lip,
             "eye": retargetor_eye,
         }
+        inference_config = InferenceConfig()
 
-        pipeline = LivePortraitPipeline(
-            self.appearance_feature_extractor,
-            self.motion_extractor,
-            self.warping_module,
-            self.spade_generator,
-            self.stich_retargeting_module,
-            InferenceConfig(),
-        )
+        models = {
+            "appearance_feature_extractor": self.appearance_feature_extractor,
+            "motion_extractor": self.motion_extractor,
+            "spade_generator": self.spade_generator,
+            "warping_module": self.warping_module,
+            "stitching_retargeting_module": self.stich_retargeting_module,
+        }
+
+        pipeline = LivePortraitPipeline(inference_config, CropConfig(), models)
 
         return (pipeline,)
 
@@ -283,7 +247,10 @@ class LivePortraitMotionTemplate:
         crop_cfg = CropConfig(
             dsize=dsize, scale=scale, vx_ratio=vx_ratio, vy_ratio=vy_ratio
         )
+        # inference_cfg = InferenceConfig()
+        # )  # use attribute of args to initial InferenceConfig
 
+        # wrapper = LivePortraitWrapper(cfg=inference_cfg)
         cropper = Cropper(crop_cfg=crop_cfg)
 
         # wants BGR
@@ -391,6 +358,7 @@ class LivePortraitProcess:
         lip_retargeting_multiplier,
     ):
         source_image_np = (source_image * 255).byte().numpy()
+
         driving_images_np = (driving_images * 255).byte().numpy()
 
         crop_cfg = CropConfig(
@@ -417,6 +385,7 @@ class LivePortraitProcess:
             flag_lip_zero=lip_zero,
         )
 
+        print(pipeline.live_portrait_wrapper.cfg)
         cropped_out_list = []
         full_out_list = []
         for img in source_image_np:
