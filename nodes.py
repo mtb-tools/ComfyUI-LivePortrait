@@ -299,7 +299,7 @@ class LivePortraitProcess:
                 "pipeline": ("LIVEPORTRAITPIPE",),
                 "source_image": ("IMAGE",),
                 "dsize": ("INT", {"default": 512, "min": 64, "max": 2048}),
-                "scale": ("FLOAT", {"default": 2.3, "min": 1.0, "max": 4.0}),
+                "scale": ("FLOAT", {"default": 2.3, "min": 1.0, "max": 4.0, "step": 0.01}),
                 "vx_ratio": (
                     "FLOAT",
                     {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
@@ -311,12 +311,12 @@ class LivePortraitProcess:
                 "eye_retargeting": ("BOOLEAN", {"default": False}),
                 "eyes_retargeting_multiplier": (
                     "FLOAT",
-                    {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.01},
+                    {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.001},
                 ),
                 "lip_retargeting": ("BOOLEAN", {"default": False}),
                 "lip_retargeting_multiplier": (
                     "FLOAT",
-                    {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.01},
+                    {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.001},
                 ),
                 "stitching": ("BOOLEAN", {"default": True}),
                 "relative": ("BOOLEAN", {"default": True}),
