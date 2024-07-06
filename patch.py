@@ -26,6 +26,20 @@ from .liveportrait.src.utils.timer import Timer
 import numpy as np
 
 
+# Path to the extension's root
+script_directory = Path(__file__).parent
+"""Path to the extension's root."""
+
+models_dir = Path(folder_paths.models_dir)
+"""ComfyUI's root model directory."""
+
+lp_models = models_dir / "liveportrait"
+"""Path to the liveportrait models directory."""
+
+upstream = script_directory / "liveportrait" / "src"
+"""Upsream source code root"""
+
+
 def apply_config(base, **kwargs):
     for k, v in kwargs.items():
         setattr(base, k, v)
@@ -53,11 +67,12 @@ def pipeline_init(
 
 
 def cropper_init(self: Cropper, **kwargs) -> None:
+    """Overwriting the cropper init in order to customise model loading."""
+
     device_id = kwargs.get("device_id", 0)
-    models_dir = Path(folder_paths.models_dir)
     self.landmark_runner = LandmarkRunner(
         # ckpt_path=make_abs_path('../../pretrained_weights/liveportrait/landmark.onnx'),
-        ckpt_path=(models_dir / "liveportrait" / "landmark.onnx").as_posix(),
+        ckpt_path=(lp_models / "landmark.onnx").as_posix(),
         onnx_provider="cuda",
         device_id=device_id,
     )
@@ -85,6 +100,7 @@ def pipeline_execute(
     crop_info = self.cropper.crop_single_image(img_rgb)
     source_lmk = crop_info["lmk_crop"]
     img_crop, img_crop_256x256 = crop_info["img_crop"], crop_info["img_crop_256x256"]
+
     if inference_cfg.flag_do_crop:
         I_s = self.live_portrait_wrapper.prepare_source(img_crop_256x256)
     else:
@@ -115,11 +131,10 @@ def pipeline_execute(
     ############################################
 
     ######## process driving info ########
-    if driving_template:
-        driving_rgb_lst = load_driving_info(driving_template)
-    else:
-        driving_rgb_lst = driving_images_np
-
+    # if driving_template:
+    # driving_rgb_lst = load_driving_info(driving_template)
+    # else:
+    driving_rgb_lst = driving_images_np
 
     driving_rgb_lst_256 = [cv2.resize(_, (256, 256)) for _ in driving_rgb_lst]
     I_d_lst = self.live_portrait_wrapper.prepare_driving_videos(driving_rgb_lst_256)
@@ -146,14 +161,7 @@ def pipeline_execute(
     if inference_cfg.flag_pasteback:
         if inference_cfg.mask_crop is None:
             inference_cfg.mask_crop = cv2.imread(
-                (
-                    Path(__file__).parent
-                    / "liveportrait"
-                    / "src"
-                    / "utils"
-                    / "resources"
-                    / "mask_template.png"
-                )
+                (upstream / "utils" / "resources" / "mask_template.png")
                 .resolve()
                 .as_posix(),
                 cv2.IMREAD_COLOR,
@@ -172,18 +180,18 @@ def pipeline_execute(
     pbar = comfy.utils.ProgressBar(n_frames)
     for i in range(n_frames):
         # if is_video(args.driving_info):
-        if not driving_template:
-            # extract kp info by M
-            I_d_i = I_d_lst[i]
-            x_d_i_info = self.live_portrait_wrapper.get_kp_info(I_d_i)
-            R_d_i = get_rotation_matrix(
-                x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
-            )
-        else:
-            # from template
-            x_d_i_info = template_lst[i]
-            x_d_i_info = dct2cuda(x_d_i_info, inference_cfg.device_id)
-            R_d_i = x_d_i_info["R_d"]
+        # if not driving_template:
+        # extract kp info by M
+        I_d_i = I_d_lst[i]
+        x_d_i_info = self.live_portrait_wrapper.get_kp_info(I_d_i)
+        R_d_i = get_rotation_matrix(
+            x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
+        )
+        # else:
+        # from template
+        # x_d_i_info = template_lst[i]
+        # x_d_i_info = dct2cuda(x_d_i_info, inference_cfg.device_id)
+        # R_d_i = x_d_i_info["R_d"]
 
         if i == 0:
             R_d_0 = R_d_i

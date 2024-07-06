@@ -1,18 +1,12 @@
-import os
 import torch
 import yaml
-import folder_paths
 import comfy.model_management as mm
 import comfy.utils
 
-script_directory = os.path.dirname(os.path.abspath(__file__))
-
-
-# from .liveportrait.src.config.argument_config import ArgumentConfig
 from .liveportrait.src.config.crop_config import CropConfig
 from .liveportrait.src.config.inference_config import InferenceConfig
 
-from .patch import LivePortraitPipeline, Cropper, apply_config
+from .patch import LivePortraitPipeline, Cropper, apply_config, lp_models, upstream
 from .liveportrait.src.modules.spade_generator import SPADEDecoder
 from .liveportrait.src.modules.warping_network import WarpingNetwork
 from .liveportrait.src.modules.motion_extractor import MotionExtractor
@@ -22,13 +16,6 @@ from .liveportrait.src.modules.appearance_feature_extractor import (
 from .liveportrait.src.modules.stitching_retargeting_network import (
     StitchingRetargetingNetwork,
 )
-
-# class CropConfig:
-#     def __init__(self, dsize=512, scale=2.3, vx_ratio=0, vy_ratio=-0.125):
-#         self.dsize = dsize
-#         self.scale = scale
-#         self.vx_ratio = vx_ratio
-#         self.vy_ratio = vy_ratio
 
 
 class DownloadAndLoadLivePortraitModels:
@@ -49,33 +36,26 @@ class DownloadAndLoadLivePortraitModels:
 
         pbar = comfy.utils.ProgressBar(3)
 
-        download_path = os.path.join(folder_paths.models_dir, "liveportrait")
-        model_path = os.path.join(download_path)
-
-        if not os.path.exists(model_path):
-            print(f"Downloading model to: {model_path}")
+        if not lp_models.exists():
+            print(f"Downloading model to: {lp_models.as_posix()}")
             from huggingface_hub import snapshot_download
 
             snapshot_download(
                 repo_id="Kijai/LivePortrait_safetensors",
-                local_dir=download_path,
+                local_dir=lp_models.as_posix(),
                 local_dir_use_symlinks=False,
             )
 
-        model_config_path = os.path.join(
-            script_directory, "liveportrait", "src", "config", "models.yaml"
-        )
+        model_config_path = upstream / "config" / "models.yaml"
         with open(model_config_path, "r") as file:
             model_config = yaml.safe_load(file)
 
-        feature_extractor_path = os.path.join(
-            model_path, "appearance_feature_extractor.safetensors"
-        )
-        motion_extractor_path = os.path.join(model_path, "motion_extractor.safetensors")
-        warping_module_path = os.path.join(model_path, "warping_module.safetensors")
-        spade_generator_path = os.path.join(model_path, "spade_generator.safetensors")
-        stitching_retargeting_path = os.path.join(
-            model_path, "stitching_retargeting_module.safetensors"
+        feature_extractor_path = lp_models / "appearance_feature_extractor.safetensors"
+        motion_extractor_path = lp_models / "motion_extractor.safetensors"
+        warping_module_path = lp_models / "warping_module.safetensors"
+        spade_generator_path = lp_models / "spade_generator.safetensors"
+        stitching_retargeting_path = (
+            lp_models / "stitching_retargeting_module.safetensors"
         )
 
         # init F
@@ -86,16 +66,17 @@ class DownloadAndLoadLivePortraitModels:
             **model_params
         ).to(device)
         self.appearance_feature_extractor.load_state_dict(
-            comfy.utils.load_torch_file(feature_extractor_path)
+            comfy.utils.load_torch_file(feature_extractor_path.as_posix())
         )
         self.appearance_feature_extractor.eval()
         print("Load appearance_feature_extractor done.")
         pbar.update(1)
+
         # init M
         model_params = model_config["model_params"]["motion_extractor_params"]
         self.motion_extractor = MotionExtractor(**model_params).to(device)
         self.motion_extractor.load_state_dict(
-            comfy.utils.load_torch_file(motion_extractor_path)
+            comfy.utils.load_torch_file(motion_extractor_path.as_posix())
         )
         self.motion_extractor.eval()
         print("Load motion_extractor done.")
@@ -104,7 +85,7 @@ class DownloadAndLoadLivePortraitModels:
         model_params = model_config["model_params"]["warping_module_params"]
         self.warping_module = WarpingNetwork(**model_params).to(device)
         self.warping_module.load_state_dict(
-            comfy.utils.load_torch_file(warping_module_path)
+            comfy.utils.load_torch_file(warping_module_path.as_posix())
         )
         self.warping_module.eval()
         print("Load warping_module done.")
@@ -113,7 +94,7 @@ class DownloadAndLoadLivePortraitModels:
         model_params = model_config["model_params"]["spade_generator_params"]
         self.spade_generator = SPADEDecoder(**model_params).to(device)
         self.spade_generator.load_state_dict(
-            comfy.utils.load_torch_file(spade_generator_path)
+            comfy.utils.load_torch_file(spade_generator_path.as_posix())
         )
         self.spade_generator.eval()
         print("Load spade_generator done.")
@@ -130,7 +111,7 @@ class DownloadAndLoadLivePortraitModels:
             return filtered_checkpoint
 
         config = model_config["model_params"]["stitching_retargeting_module_params"]
-        checkpoint = comfy.utils.load_torch_file(stitching_retargeting_path)
+        checkpoint = comfy.utils.load_torch_file(stitching_retargeting_path.as_posix())
 
         stitcher_prefix = "retarget_shoulder"
         stitcher_checkpoint = filter_checkpoint_for_model(checkpoint, stitcher_prefix)
@@ -169,6 +150,8 @@ class DownloadAndLoadLivePortraitModels:
             "stitching_retargeting_module": self.stich_retargeting_module,
         }
 
+        # NOTE: this uses our patched __init__ that accepts different input args than the original method
+        # your lsp will complain about that
         pipeline = LivePortraitPipeline(inference_config, CropConfig(), models)
 
         return (pipeline,)
@@ -176,7 +159,7 @@ class DownloadAndLoadLivePortraitModels:
 
 class LivePortraitProcess:
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
         return {
             "required": {
                 "pipeline": ("LIVEPORTRAITPIPE",),
@@ -227,24 +210,23 @@ class LivePortraitProcess:
 
     def process(
         self,
-        source_image,
-        dsize,
-        scale,
-        vx_ratio,
-        vy_ratio,
+        source_image: torch.Tensor,
+        dsize: int,
+        scale: float,
+        vx_ratio: float,
+        vy_ratio: float,
         pipeline: LivePortraitPipeline,
-        lip_zero,
-        eye_retargeting,
-        lip_retargeting,
-        stitching,
-        relative,
-        eyes_retargeting_multiplier,
-        lip_retargeting_multiplier,
-        driving_template=None,
-        driving_images=None,
+        lip_zero: bool,
+        eye_retargeting: bool,
+        lip_retargeting: bool,
+        stitching: bool,
+        relative: bool,
+        eyes_retargeting_multiplier: float,
+        lip_retargeting_multiplier: float,
+        driving_template: str | None = None,
+        driving_images: torch.Tensor | None = None,
     ):
         source_image_np = (source_image * 255).byte().numpy()
-
         driving_images_np = (driving_images * 255).byte().numpy()
 
         crop_cfg = CropConfig(
@@ -270,7 +252,6 @@ class LivePortraitProcess:
             flag_do_crop=True,
         )
 
-        print(pipeline.live_portrait_wrapper.cfg)
         cropped_out_list = []
         full_out_list = []
         for img in source_image_np:
