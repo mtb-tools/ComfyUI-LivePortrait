@@ -11,7 +11,6 @@ import pickle
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 
-from dataclasses import asdict
 
 from .liveportrait.src.utils.camera import get_rotation_matrix
 from .liveportrait.src.config.argument_config import ArgumentConfig
@@ -28,9 +27,6 @@ from .liveportrait.src.modules.appearance_feature_extractor import (
 from .liveportrait.src.modules.stitching_retargeting_network import (
     StitchingRetargetingNetwork,
 )
-
-
-
 
 # class CropConfig:
 #     def __init__(self, dsize=512, scale=2.3, vx_ratio=0, vy_ratio=-0.125):
@@ -286,11 +282,6 @@ class LivePortraitMotionTemplate:
             pickle.dump([templates, lmk], f)
 
 
-def apply_config(base, **kwargs):
-    for k, v in kwargs:
-        setattr(base, k, v)
-
-
 class LivePortraitProcess:
     @classmethod
     def INPUT_TYPES(s):
@@ -299,7 +290,10 @@ class LivePortraitProcess:
                 "pipeline": ("LIVEPORTRAITPIPE",),
                 "source_image": ("IMAGE",),
                 "dsize": ("INT", {"default": 512, "min": 64, "max": 2048}),
-                "scale": ("FLOAT", {"default": 2.3, "min": 1.0, "max": 4.0, "step": 0.01}),
+                "scale": (
+                    "FLOAT",
+                    {"default": 2.3, "min": 1.0, "max": 4.0, "step": 0.01},
+                ),
                 "vx_ratio": (
                     "FLOAT",
                     {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01},
