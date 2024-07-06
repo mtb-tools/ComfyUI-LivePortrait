@@ -164,6 +164,7 @@ class LivePortraitProcess:
             "required": {
                 "pipeline": ("LIVEPORTRAITPIPE",),
                 "source_image": ("IMAGE",),
+                "driving_images": ("IMAGE",),
                 "dsize": ("INT", {"default": 512, "min": 64, "max": 2048}),
                 "scale": (
                     "FLOAT",
@@ -191,10 +192,9 @@ class LivePortraitProcess:
                 "stitching": ("BOOLEAN", {"default": True}),
                 "relative": ("BOOLEAN", {"default": True}),
             },
-            "optional": {
-                "driving_images": ("IMAGE",),
-                "driving_template": ("LIVEPORTRAIT_TEMPLATE",),
-            },
+            # "optional": {
+            # "driving_template": ("LIVEPORTRAIT_TEMPLATE",),
+            # },
         }
 
     RETURN_TYPES = (
@@ -211,6 +211,7 @@ class LivePortraitProcess:
     def process(
         self,
         source_image: torch.Tensor,
+        driving_images: torch.Tensor,
         dsize: int,
         scale: float,
         vx_ratio: float,
@@ -223,8 +224,6 @@ class LivePortraitProcess:
         relative: bool,
         eyes_retargeting_multiplier: float,
         lip_retargeting_multiplier: float,
-        driving_template: str | None = None,
-        driving_images: torch.Tensor | None = None,
     ):
         source_image_np = (source_image * 255).byte().numpy()
         driving_images_np = (driving_images * 255).byte().numpy()
