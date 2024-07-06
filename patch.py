@@ -115,8 +115,11 @@ def pipeline_execute(
     ############################################
 
     ######## process driving info ########
+    if driving_template:
+        driving_rgb_lst = load_driving_info(driving_template)
+    else:
+        driving_rgb_lst = driving_images_np
 
-    driving_rgb_lst = driving_images_np
 
     driving_rgb_lst_256 = [cv2.resize(_, (256, 256)) for _ in driving_rgb_lst]
     I_d_lst = self.live_portrait_wrapper.prepare_driving_videos(driving_rgb_lst_256)
@@ -129,6 +132,15 @@ def pipeline_execute(
             )
         )
 
+    # elif is_template(args.driving_info):
+    #     log(f"Load from video templates {args.driving_info}")
+    #     with open(args.driving_info, 'rb') as f:
+    #         template_lst, driving_lmk_lst = pickle.load(f)
+    #     n_frames = template_lst[0]['n_frames']
+    #     input_eye_ratio_lst, input_lip_ratio_lst = self.live_portrait_wrapper.calc_retargeting_ratio(source_lmk, driving_lmk_lst)
+    # else:
+    #     raise Exception("Unsupported driving types!")
+    #########################################
 
     ######## prepare for pasteback ########
     if inference_cfg.flag_pasteback:
@@ -159,11 +171,20 @@ def pipeline_execute(
     R_d_0, x_d_0_info = None, None
     pbar = comfy.utils.ProgressBar(n_frames)
     for i in range(n_frames):
-        I_d_i = I_d_lst[i]
-        x_d_i_info = self.live_portrait_wrapper.get_kp_info(I_d_i)
-        R_d_i = get_rotation_matrix(
-            x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
-        )
+        # if is_video(args.driving_info):
+        if not driving_template:
+            # extract kp info by M
+            I_d_i = I_d_lst[i]
+            x_d_i_info = self.live_portrait_wrapper.get_kp_info(I_d_i)
+            R_d_i = get_rotation_matrix(
+                x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
+            )
+        else:
+            # from template
+            x_d_i_info = template_lst[i]
+            x_d_i_info = dct2cuda(x_d_i_info, inference_cfg.device_id)
+            R_d_i = x_d_i_info["R_d"]
+
         if i == 0:
             R_d_0 = R_d_i
             x_d_0_info = x_d_i_info

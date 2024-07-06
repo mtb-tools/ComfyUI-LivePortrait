@@ -211,6 +211,29 @@ class DownloadAndLoadLivePortraitModels:
         return (pipeline,)
 
 
+class LoadMotionTemplate:
+    @classmethod
+    def INPUT_TYPES(cls):
+        input_dir = Path(folder_paths.get_input_directory()) / "liveportrait"
+        files = [x.stem for x in input_dir.glob("*.pkl")]
+        return {
+            "required": {
+                "template": (sorted(files),),
+            }
+        }
+
+    RETURN_TYPES = ("LIVEPORTRAIT_TEMPLATE",)
+    RETURN_NAMES = ("template",)
+    FUNCTION = "process"
+    CATEGORY = "LivePortrait"
+
+    def process(
+        self,
+        name: str,
+    ):
+        return (pickle_pth,)
+
+
 class LivePortraitMotionTemplate:
     @classmethod
     def INPUT_TYPES(s):
@@ -237,7 +260,16 @@ class LivePortraitMotionTemplate:
     FUNCTION = "process"
     CATEGORY = "LivePortrait"
 
-    def process(self, name, pipeline, driving_images, dsize, scale, vx_ratio, vy_ratio):
+    def process(
+        self,
+        name: str,
+        pipeline: LivePortraitPipeline,
+        driving_images: torch.Tensor,
+        dsize: int,
+        scale: float,
+        vx_ratio: float,
+        vy_ratio: float,
+    ):
         driving_images_np = (driving_images * 255).byte().numpy()
 
         crop_cfg = CropConfig(
@@ -253,7 +285,7 @@ class LivePortraitMotionTemplate:
 
         resized = [cv2.resize(im, (256, 256)) for im in driving_images_np]
         lmk = cropper.get_retargeting_lmk_info(resized)
-        prepared = pipeline.prepare_driving_videos(resized)
+        prepared = pipeline.live_portrait_wrapper.prepare_driving_videos(resized)
 
         count = prepared.shape[0]
 
@@ -261,9 +293,9 @@ class LivePortraitMotionTemplate:
 
         progress = comfy.utils.ProgressBar(count)
 
-        for i in range(n_frames):
+        for i in range(count):
             id = prepared[i]
-            kp_info = pipeline.get_kp_info(id)
+            kp_info = pipeline.live_portrait_wrapper.get_kp_info(id)
             rot = get_rotation_matrix(kp_info["pitch"], kp_info["yaw"], kp_info["roll"])
 
             template_dct = {"n_frames": count, "frames_index": i}
@@ -277,9 +309,11 @@ class LivePortraitMotionTemplate:
 
         out_dir = Path(folder_paths.get_input_directory()) / "liveportrait"
         out_dir.mkdir(exist_ok=True, parents=True)
-
-        with open(out_dir / (name + ".pkl"), "wb") as f:
+        res = out_dir / (name + ".pkl")
+        with open(res, "wb") as f:
             pickle.dump([templates, lmk], f)
+
+        return (res.as_poxix(),)
 
 
 class LivePortraitProcess:
@@ -312,13 +346,13 @@ class LivePortraitProcess:
                     "FLOAT",
                     {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.001},
                 ),
+                "lip_zero": ("BOOLEAN", {"default": True}),
                 "stitching": ("BOOLEAN", {"default": True}),
                 "relative": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "driving_images": ("IMAGE",),
                 "driving_template": ("LIVEPORTRAIT_TEMPLATE",),
-                "lip_zero": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -336,8 +370,6 @@ class LivePortraitProcess:
     def process(
         self,
         source_image,
-        driving_template,
-        driving_images,
         dsize,
         scale,
         vx_ratio,
@@ -350,6 +382,8 @@ class LivePortraitProcess:
         relative,
         eyes_retargeting_multiplier,
         lip_retargeting_multiplier,
+        driving_template=None,
+        driving_images=None,
     ):
         source_image_np = (source_image * 255).byte().numpy()
 
@@ -377,6 +411,7 @@ class LivePortraitProcess:
             flag_stitching=stitching,
             flag_relative=relative,
             flag_lip_zero=lip_zero,
+            flag_do_crop=True,
         )
 
         print(pipeline.live_portrait_wrapper.cfg)
@@ -407,9 +442,11 @@ NODE_CLASS_MAPPINGS = {
     "DownloadAndLoadLivePortraitModels": DownloadAndLoadLivePortraitModels,
     "LivePortraitProcess": LivePortraitProcess,
     "LivePortraitMotionTemplate": LivePortraitMotionTemplate,
+    "LoadMotionTemplate": LoadMotionTemplate,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "DownloadAndLoadLivePortraitModels": "(Down)Load LivePortraitModels",
     "LivePortraitProcess": "LivePortraitProcess",
     "LivePortraitMotionTemplate": "LivePortraitMotionTemplate",
+    "LoadMotionTemplate": "LoadMotionTemplate",
 }
