@@ -4,11 +4,6 @@ import yaml
 import folder_paths
 import comfy.model_management as mm
 import comfy.utils
-
-script_directory = Path(__file__).parent
-lp_root = script_directory / "liveportrait"
-models_dir = Path(folder_paths.models_dir) / "liveportrait"
-
 from .liveportrait.live_portrait_pipeline import LivePortraitPipeline
 from .liveportrait.utils.cropper import Cropper
 from .liveportrait.modules.spade_generator import SPADEDecoder
@@ -20,6 +15,21 @@ from .liveportrait.modules.appearance_feature_extractor import (
 from .liveportrait.modules.stitching_retargeting_network import (
     StitchingRetargetingNetwork,
 )
+
+
+script_directory = Path(__file__).parent
+"""Path to the extension's root."""
+
+lp_root = script_directory / "liveportrait"
+"""Upsream source code root"""
+
+models_dir = Path(folder_paths.models_dir) / "liveportrait"
+"""LivePortrait model directory."""
+
+
+def apply_config(base, **kwargs):
+    for k, v in kwargs.items():
+        setattr(base, k, v)
 
 
 class InferenceConfig:
@@ -63,7 +73,7 @@ class InferenceConfig:
 
 
 class CropConfig:
-    def __init__(self, dsize=512, scale=2.3, vx_ratio=0, vy_ratio=-0.125):
+    def __init__(self, dsize=512, scale=1.6, vx_ratio=0, vy_ratio=-0.125):
         self.dsize = dsize
         self.scale = scale
         self.vx_ratio = vx_ratio
@@ -83,7 +93,7 @@ class ArgumentConfig:
         flag_do_crop=True,
         flag_do_rot=True,
         dsize=512,
-        scale=2.3,
+        scale=1.6,
         vx_ratio=0,
         vy_ratio=-0.125,
     ):
@@ -264,7 +274,7 @@ class LivePortraitProcess:
                 "dsize": ("INT", {"default": 512, "min": 64, "max": 2048}),
                 "scale": (
                     "FLOAT",
-                    {"default": 2.3, "min": 1.0, "max": 4.0, "step": 0.01},
+                    {"default": 1.6, "min": 1.0, "max": 4.0, "step": 0.01},
                 ),
                 "vx_ratio": (
                     "FLOAT",
@@ -281,10 +291,17 @@ class LivePortraitProcess:
                     {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.001},
                 ),
                 "lip_retargeting": ("BOOLEAN", {"default": False}),
+                "lip_zero_threshold": (
+                    "FLOAT",
+                    {"default": 0.03, "min": 0, "step": 0.001},
+                ),
                 "lip_retargeting_multiplier": (
                     "FLOAT",
                     {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.001},
                 ),
+                "anchor_frame": ("INT", {"default": 0}),
+                "do_rot": ("BOOLEAN", {"default": True}),
+                "do_crop": ("BOOLEAN", {"default": True}),
                 "stitching": ("BOOLEAN", {"default": True}),
                 "relative": ("BOOLEAN", {"default": True}),
             },
@@ -326,10 +343,14 @@ class LivePortraitProcess:
         lip_zero: bool,
         eye_retargeting: bool,
         lip_retargeting: bool,
+        do_crop: bool,
+        do_rot: bool,
         stitching: bool,
         relative: bool,
         eyes_retargeting_multiplier: float,
         lip_retargeting_multiplier: float,
+        lip_zero_threshold: float,
+        anchor_frame: int = 0,
         mismatch_method: str = "repeat",
         onnx_device="CUDA",
     ):
@@ -345,17 +366,21 @@ class LivePortraitProcess:
 
         cropper = Cropper(crop_cfg=crop_cfg, provider=onnx_device)
         pipeline.cropper = cropper
-        pipeline.live_portrait_wrapper.cfg.flag_eye_retargeting = eye_retargeting
-        pipeline.live_portrait_wrapper.cfg.eyes_retargeting_multiplier = (
-            eyes_retargeting_multiplier
+
+        apply_config(
+            pipeline.live_portrait_wrapper.cfg,
+            flag_eye_retargeting=eye_retargeting,
+            eyes_retargeting_multiplier=eyes_retargeting_multiplier,
+            flag_lip_retargeting=lip_retargeting,
+            lip_retargeting_multiplier=lip_retargeting_multiplier,
+            flag_stitching=stitching,
+            flag_relative=relative,
+            flag_lip_zero=lip_zero,
+            lip_zero_threshold=lip_zero_threshold,
+            anchor_frame=anchor_frame,
+            flag_do_crop=do_crop,
+            flag_do_rot=do_rot,
         )
-        pipeline.live_portrait_wrapper.cfg.flag_lip_retargeting = lip_retargeting
-        pipeline.live_portrait_wrapper.cfg.lip_retargeting_multiplier = (
-            lip_retargeting_multiplier
-        )
-        pipeline.live_portrait_wrapper.cfg.flag_stitching = stitching
-        pipeline.live_portrait_wrapper.cfg.flag_relative = relative
-        pipeline.live_portrait_wrapper.cfg.flag_lip_zero = lip_zero
 
         cropped_out_list = []
         full_out_list = []
