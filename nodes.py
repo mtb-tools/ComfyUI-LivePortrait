@@ -16,7 +16,7 @@ from .liveportrait.modules.appearance_feature_extractor import (
 from .liveportrait.modules.stitching_retargeting_network import (
     StitchingRetargetingNetwork,
 )
-
+from .log import logger
 
 script_directory = Path(__file__).parent
 """Path to the extension's root."""
@@ -91,17 +91,18 @@ class DownloadAndLoadLivePortraitModels:
 
     RETURN_TYPES = ("LIVEPORTRAITPIPE",)
     RETURN_NAMES = ("live_portrait_pipe",)
-    FUNCTION = "loadmodel"
+    FUNCTION = "load_model"
     CATEGORY = "LivePortrait"
 
-    def loadmodel(self, precision="fp16"):
+    def load_model(self, precision="fp16"):
         device = mm.get_torch_device()
         mm.soft_empty_cache()
 
         pbar = comfy.utils.ProgressBar(5)
 
+        # NOTE: Download model
         if not models_dir.exists():
-            print(f"Downloading model to: {models_dir}")
+            logger.info(f"Downloading model to: {models_dir}")
             from huggingface_hub import snapshot_download
 
             snapshot_download(
@@ -115,106 +116,63 @@ class DownloadAndLoadLivePortraitModels:
         with open(model_config_path, "r") as file:
             model_config = yaml.safe_load(file)
 
-        feature_extractor_path = models_dir / "appearance_feature_extractor.safetensors"
-        motion_extractor_path = models_dir / "motion_extractor.safetensors"
-        warping_module_path = models_dir / "warping_module.safetensors"
-        spade_generator_path = models_dir / "spade_generator.safetensors"
-        stitching_retargeting_path = (
-            models_dir / "stitching_retargeting_module.safetensors"
-        )
-
-        # NOTE: APPEARANCE FEATURE EXTRACTION
-        model_params = model_config["model_params"][
-            "appearance_feature_extractor_params"
+        models = {}
+        model_specs = [
+            (
+                "appearance_feature_extractor",
+                AppearanceFeatureExtractor,
+                "appearance_feature_extractor_params",
+            ),
+            ("motion_extractor", MotionExtractor, "motion_extractor_params"),
+            ("warping_module", WarpingNetwork, "warping_module_params"),
+            ("spade_generator", SPADEDecoder, "spade_generator_params"),
         ]
-        appearance_feature_extractor = AppearanceFeatureExtractor(**model_params).to(
-            device
-        )
-        appearance_feature_extractor.load_state_dict(
-            comfy.utils.load_torch_file(feature_extractor_path.as_posix())
-        )
-        appearance_feature_extractor.eval()
-        print("Load appearance_feature_extractor done.")
-        pbar.update(1)
+        for name, model_class, params_key in model_specs:
+            model_params = model_config["model_params"][params_key]
+            model = model_class(**model_params).to(device)
+            model.load_state_dict(
+                comfy.utils.load_torch_file(
+                    (models_dir / f"{name}.safetensors").as_posix()
+                )
+            )
+            model.eval()
+            models[name] = model
+            logger.info(f"Load {name} done.")
+            pbar.update(1)
 
-        # NOTE: MOTION EXTRACTION
-        model_params = model_config["model_params"]["motion_extractor_params"]
-        motion_extractor = MotionExtractor(**model_params).to(device)
-        motion_extractor.load_state_dict(
-            comfy.utils.load_torch_file(motion_extractor_path.as_posix())
-        )
-        motion_extractor.eval()
-        print("Load motion_extractor done.")
-        pbar.update(1)
-
-        # NOTE: WRAPPING
-        model_params = model_config["model_params"]["warping_module_params"]
-        warping_module = WarpingNetwork(**model_params).to(device)
-        warping_module.load_state_dict(
-            comfy.utils.load_torch_file(warping_module_path.as_posix())
-        )
-        warping_module.eval()
-        print("Load warping_module done.")
-        pbar.update(1)
-
-        # NOTE: SPADE
-        model_params = model_config["model_params"]["spade_generator_params"]
-        spade_generator = SPADEDecoder(**model_params).to(device)
-        spade_generator.load_state_dict(
-            comfy.utils.load_torch_file(spade_generator_path.as_posix())
-        )
-        spade_generator.eval()
-        print("Load spade_generator done.")
-        pbar.update(1)
-
+        # NOTE: Stitch module
         def filter_checkpoint_for_model(checkpoint, prefix):
-            """Filter and adjust the checkpoint dictionary for a specific model based on the prefix."""
-            # Create a new dictionary where keys are adjusted by removing the prefix and the model name
-            filtered_checkpoint = {
-                key.replace(prefix + "_module.", ""): value
+            return {
+                key.replace(f"{prefix}_module.", ""): value
                 for key, value in checkpoint.items()
                 if key.startswith(prefix)
             }
-            return filtered_checkpoint
 
-        config = model_config["model_params"]["stitching_retargeting_module_params"]
-        checkpoint = comfy.utils.load_torch_file(stitching_retargeting_path.as_posix())
+        stitch_cfg = model_config["model_params"]["stitching_retargeting_module_params"]
+        checkpoint = comfy.utils.load_torch_file(
+            (models_dir / "stitching_retargeting_module.safetensors").as_posix()
+        )
 
-        stitcher_prefix = "retarget_shoulder"
-        stitcher_checkpoint = filter_checkpoint_for_model(checkpoint, stitcher_prefix)
-        stitcher = StitchingRetargetingNetwork(**config.get("stitching"))
-        stitcher.load_state_dict(stitcher_checkpoint)
-        stitcher = stitcher.to(device)
-        stitcher.eval()
+        stitching_retargeting_module = {}
+        for prefix, config_key in [
+            ("retarget_shoulder", "stitching"),
+            ("retarget_mouth", "lip"),
+            ("retarget_eye", "eye"),
+        ]:
+            filtered_checkpoint = filter_checkpoint_for_model(checkpoint, prefix)
+            model = StitchingRetargetingNetwork(**stitch_cfg.get(config_key))
+            model.load_state_dict(filtered_checkpoint)
+            model = model.to(device)
+            model.eval()
+            stitching_retargeting_module[config_key] = model
 
-        lip_prefix = "retarget_mouth"
-        lip_checkpoint = filter_checkpoint_for_model(checkpoint, lip_prefix)
-        retargetor_lip = StitchingRetargetingNetwork(**config.get("lip"))
-        retargetor_lip.load_state_dict(lip_checkpoint)
-        retargetor_lip = retargetor_lip.to(device)
-        retargetor_lip.eval()
-
-        eye_prefix = "retarget_eye"
-        eye_checkpoint = filter_checkpoint_for_model(checkpoint, eye_prefix)
-        retargetor_eye = StitchingRetargetingNetwork(**config.get("eye"))
-        retargetor_eye.load_state_dict(eye_checkpoint)
-        retargetor_eye = retargetor_eye.to(device)
-        retargetor_eye.eval()
-        print("Load stitching_retargeting_module done.")
-
-        stich_retargeting_module = {
-            "stitching": stitcher,
-            "lip": retargetor_lip,
-            "eye": retargetor_eye,
-        }
+        logger.info("Load stitching_retargeting_module done.")
+        pbar.update(1)
 
         pipeline = LivePortraitPipeline(
-            appearance_feature_extractor,
-            motion_extractor,
-            warping_module,
-            spade_generator,
-            stich_retargeting_module,
-            InferenceConfig(
+            **models,
+            stitching_retargeting_module=stitching_retargeting_module,
+            inference_cfg=InferenceConfig(
                 device_id=device,
                 flag_use_half_precision=True if precision == "fp16" else False,
             ),
