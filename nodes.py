@@ -1,11 +1,13 @@
-import os
+from pathlib import Path
 import torch
 import yaml
 import folder_paths
 import comfy.model_management as mm
 import comfy.utils
 
-script_directory = os.path.dirname(os.path.abspath(__file__))
+script_directory = Path(__file__).parent
+lp_root = script_directory / "liveportrait"
+models_dir = Path(folder_paths.models_dir) / "liveportrait"
 
 from .liveportrait.live_portrait_pipeline import LivePortraitPipeline
 from .liveportrait.utils.cropper import Cropper
@@ -102,7 +104,7 @@ class ArgumentConfig:
 
 class DownloadAndLoadLivePortraitModels:
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
         return {
             "required": {},
             "optional": {
@@ -127,36 +129,30 @@ class DownloadAndLoadLivePortraitModels:
 
         pbar = comfy.utils.ProgressBar(3)
 
-        download_path = os.path.join(folder_paths.models_dir, "liveportrait")
-        model_path = os.path.join(download_path)
-
-        if not os.path.exists(model_path):
-            print(f"Downloading model to: {model_path}")
+        if not models_dir.exists():
+            print(f"Downloading model to: {models_dir}")
             from huggingface_hub import snapshot_download
 
             snapshot_download(
                 repo_id="Kijai/LivePortrait_safetensors",
-                local_dir=download_path,
+                local_dir=models_dir.as_posix(),
                 local_dir_use_symlinks=False,
             )
 
-        model_config_path = os.path.join(
-            script_directory, "liveportrait", "config", "models.yaml"
-        )
+        model_config_path = lp_root / "config" / "models.yaml"
+
         with open(model_config_path, "r") as file:
             model_config = yaml.safe_load(file)
 
-        feature_extractor_path = os.path.join(
-            model_path, "appearance_feature_extractor.safetensors"
-        )
-        motion_extractor_path = os.path.join(model_path, "motion_extractor.safetensors")
-        warping_module_path = os.path.join(model_path, "warping_module.safetensors")
-        spade_generator_path = os.path.join(model_path, "spade_generator.safetensors")
-        stitching_retargeting_path = os.path.join(
-            model_path, "stitching_retargeting_module.safetensors"
+        feature_extractor_path = models_dir / "appearance_feature_extractor.safetensors"
+        motion_extractor_path = models_dir / "motion_extractor.safetensors"
+        warping_module_path = models_dir / "warping_module.safetensors"
+        spade_generator_path = models_dir / "spade_generator.safetensors"
+        stitching_retargeting_path = (
+            models_dir / "stitching_retargeting_module.safetensors"
         )
 
-        # init F
+        # NOTE: APPEARANCE FEATURE EXTRACTION
         model_params = model_config["model_params"][
             "appearance_feature_extractor_params"
         ]
@@ -164,34 +160,37 @@ class DownloadAndLoadLivePortraitModels:
             **model_params
         ).to(device)
         self.appearance_feature_extractor.load_state_dict(
-            comfy.utils.load_torch_file(feature_extractor_path)
+            comfy.utils.load_torch_file(feature_extractor_path.as_posix())
         )
         self.appearance_feature_extractor.eval()
         print("Load appearance_feature_extractor done.")
         pbar.update(1)
-        # init M
+
+        # NOTE: MOTION EXTRACTION
         model_params = model_config["model_params"]["motion_extractor_params"]
         self.motion_extractor = MotionExtractor(**model_params).to(device)
         self.motion_extractor.load_state_dict(
-            comfy.utils.load_torch_file(motion_extractor_path)
+            comfy.utils.load_torch_file(motion_extractor_path.as_posix())
         )
         self.motion_extractor.eval()
         print("Load motion_extractor done.")
         pbar.update(1)
-        # init W
+
+        # NOTE: WRAPPING
         model_params = model_config["model_params"]["warping_module_params"]
         self.warping_module = WarpingNetwork(**model_params).to(device)
         self.warping_module.load_state_dict(
-            comfy.utils.load_torch_file(warping_module_path)
+            comfy.utils.load_torch_file(warping_module_path.as_posix())
         )
         self.warping_module.eval()
         print("Load warping_module done.")
         pbar.update(1)
-        # init G
+
+        # NOTE: SPADE
         model_params = model_config["model_params"]["spade_generator_params"]
         self.spade_generator = SPADEDecoder(**model_params).to(device)
         self.spade_generator.load_state_dict(
-            comfy.utils.load_torch_file(spade_generator_path)
+            comfy.utils.load_torch_file(spade_generator_path.as_posix())
         )
         self.spade_generator.eval()
         print("Load spade_generator done.")
@@ -208,7 +207,7 @@ class DownloadAndLoadLivePortraitModels:
             return filtered_checkpoint
 
         config = model_config["model_params"]["stitching_retargeting_module_params"]
-        checkpoint = comfy.utils.load_torch_file(stitching_retargeting_path)
+        checkpoint = comfy.utils.load_torch_file(stitching_retargeting_path.as_posix())
 
         stitcher_prefix = "retarget_shoulder"
         stitcher_checkpoint = filter_checkpoint_for_model(checkpoint, stitcher_prefix)
@@ -256,7 +255,7 @@ class DownloadAndLoadLivePortraitModels:
 # OUR CURRENT NODE
 class LivePortraitProcess:
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
         return {
             "required": {
                 "pipeline": ("LIVEPORTRAITPIPE",),
