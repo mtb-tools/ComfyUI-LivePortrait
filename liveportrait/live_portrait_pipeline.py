@@ -5,183 +5,296 @@ Pipeline of LivePortrait
 """
 
 import cv2
-import numpy as np
-import os.path as osp
-from rich.progress import track
+import comfy.utils
 
+import os.path as osp
+import numpy as np
 from .config.inference_config import InferenceConfig
 
-#from .utils.cropper import Cropper
 from .utils.camera import get_rotation_matrix
-#from .utils.video import images2video, concat_frames
 from .utils.crop import _transform_img
-#from .utils.retargeting_utils import calc_lip_close_ratio
-#from .utils.io import load_image_rgb, load_driving_info
-#from .utils.helper import mkdir, basename, dct2cuda, is_video, is_template, resize_to_limit
-from .utils.helper import resize_to_limit
-#from .utils.rprint import rlog as log
 from .live_portrait_wrapper import LivePortraitWrapper
+from ..log import logger
 
-import comfy.utils
 
 def make_abs_path(fn):
     return osp.join(osp.dirname(osp.realpath(__file__)), fn)
 
 
 class LivePortraitPipeline(object):
-
-    def __init__(self, appearance_feature_extractor, motion_extractor, warping_module,
-                 spade_generator, stitching_retargeting_module, inference_cfg: InferenceConfig):
-
+    def __init__(
+        self,
+        *,
+        appearance_feature_extractor,
+        motion_extractor,
+        warping_module,
+        spade_generator,
+        stitching_retargeting_module,
+        inference_cfg: InferenceConfig,
+    ):
         self.live_portrait_wrapper: LivePortraitWrapper = LivePortraitWrapper(
-                appearance_feature_extractor, motion_extractor, warping_module,
-                spade_generator, stitching_retargeting_module, cfg=inference_cfg)
+            appearance_feature_extractor,
+            motion_extractor,
+            warping_module,
+            spade_generator,
+            stitching_retargeting_module,
+            cfg=inference_cfg,
+        )
 
-    def execute(self, img_rgb, driving_images_np):
-        inference_cfg = self.live_portrait_wrapper.cfg # for convenience
-        ######## process reference portrait ########
-        #img_rgb = load_image_rgb(args.source_image)
-        img_rgb = resize_to_limit(img_rgb, inference_cfg.ref_max_shape, inference_cfg.ref_shape_n)
-        #log(f"Load source image from {args.source_image}")
-        crop_info = self.cropper.crop_single_image(img_rgb)
-        source_lmk = crop_info['lmk_crop']
-        img_crop, img_crop_256x256 = crop_info['img_crop'], crop_info['img_crop_256x256']
-        if inference_cfg.flag_do_crop:
-            I_s = self.live_portrait_wrapper.prepare_source(img_crop_256x256)
-        else:
-            I_s = self.live_portrait_wrapper.prepare_source(img_rgb)
-        x_s_info = self.live_portrait_wrapper.get_kp_info(I_s)
-        x_c_s = x_s_info['kp']
-        R_s = get_rotation_matrix(x_s_info['pitch'], x_s_info['yaw'], x_s_info['roll'])
-        f_s = self.live_portrait_wrapper.extract_feature_3d(I_s)
-        x_s = self.live_portrait_wrapper.transform_keypoint(x_s_info)
+    def _get_source_frame(
+        self, source_np: np.ndarray, idx: int, total_frames: int, method: str
+    ):
+        if source_np.shape[0] == 1:
+            return source_np[0]
 
-        if inference_cfg.flag_lip_zero:
-            # let lip-open scalar to be 0 at first
-            c_d_lip_before_animation = [0.]
-            combined_lip_ratio_tensor_before_animation = self.live_portrait_wrapper.calc_combined_lip_ratio(c_d_lip_before_animation, source_lmk)
-            if combined_lip_ratio_tensor_before_animation[0][0] < inference_cfg.lip_zero_threshold:
-                inference_cfg.flag_lip_zero = False
-            else:
-                lip_delta_before_animation = self.live_portrait_wrapper.retarget_lip(x_s, combined_lip_ratio_tensor_before_animation)
-        ############################################
+        if method == "repeat":
+            return source_np[min(idx, source_np.shape[0] - 1)]
+        elif method == "cycle":
+            return source_np[idx % source_np.shape[0]]
+        elif method == "mirror":
+            cycle_length = 2 * source_np.shape[0] - 2
+            mirror_idx = idx % cycle_length
+            if mirror_idx >= source_np.shape[0]:
+                mirror_idx = cycle_length - mirror_idx
+            return source_np[mirror_idx]
+        elif method == "nearest":
+            ratio = idx / (total_frames - 1)
+            return source_np[
+                min(int(ratio * (source_np.shape[0] - 1)), source_np.shape[0] - 1)
+            ]
 
-        ######## process driving info ########
-        #if is_video(args.driving_info):
-        #log(f"Load from video file (mp4 mov avi etc...): {args.driving_info}")
-        # TODO: 这里track一下驱动视频 -> 构建模板
-        #driving_rgb_lst = load_driving_info(args.driving_info)
+    def execute(
+        self,
+        source_images: np.ndarray,
+        driving_images: np.ndarray,
+        mismatch_method: str = "repeat",
+    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        config = self.live_portrait_wrapper.cfg
+        total_frames = driving_images.shape[0]
 
-        driving_rgb_lst = driving_images_np
+        cropped_outputs = []
+        full_outputs = []
 
-        driving_rgb_lst_256 = [cv2.resize(_, (256, 256)) for _ in driving_rgb_lst]
-        I_d_lst = self.live_portrait_wrapper.prepare_driving_videos(driving_rgb_lst_256)
-        n_frames = I_d_lst.shape[0]
-        if inference_cfg.flag_eye_retargeting or inference_cfg.flag_lip_retargeting:
-            driving_lmk_lst = self.cropper.get_retargeting_lmk_info(driving_rgb_lst)
-            input_eye_ratio_lst, input_lip_ratio_lst = self.live_portrait_wrapper.calc_retargeting_ratio(source_lmk, driving_lmk_lst)
+        progress_bar = comfy.utils.ProgressBar(total_frames)
 
-        # elif is_template(args.driving_info):
-        #     log(f"Load from video templates {args.driving_info}")
-        #     with open(args.driving_info, 'rb') as f:
-        #         template_lst, driving_lmk_lst = pickle.load(f)
-        #     n_frames = template_lst[0]['n_frames']
-        #     input_eye_ratio_lst, input_lip_ratio_lst = self.live_portrait_wrapper.calc_retargeting_ratio(source_lmk, driving_lmk_lst)
-        # else:
-        #     raise Exception("Unsupported driving types!")
-        #########################################
+        driving_landmarks = self._get_driving_landmarks(driving_images, config)
 
-        ######## prepare for pasteback ########
-        if inference_cfg.flag_pasteback:
-            if inference_cfg.mask_crop is None:
-                inference_cfg.mask_crop = cv2.imread(make_abs_path('./utils/resources/mask_template.png'), cv2.IMREAD_COLOR)
-            mask_ori = _transform_img(inference_cfg.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
-            mask_ori = mask_ori.astype(np.float32) / 255.
-            I_p_paste_lst = []
-        #########################################
+        for frame_index in range(total_frames):
+            try:
+                source_frame = self._get_source_frame(
+                    source_images, frame_index, total_frames, mismatch_method
+                )
+                driving_frame = driving_images[frame_index]
 
-        I_p_lst = []
-        R_d_0, x_d_0_info = None, None
-        pbar = comfy.utils.ProgressBar(n_frames)
-        for i in track(range(n_frames), description='Animating...', total=n_frames):
-            #if is_video(args.driving_info):
-            # extract kp info by M
-            I_d_i = I_d_lst[i]
-            x_d_i_info = self.live_portrait_wrapper.get_kp_info(I_d_i)
-            R_d_i = get_rotation_matrix(x_d_i_info['pitch'], x_d_i_info['yaw'], x_d_i_info['roll'])
-            # else:
-            #     # from template
-            #     x_d_i_info = template_lst[i]
-            #     x_d_i_info = dct2cuda(x_d_i_info, inference_cfg.device_id)
-            #     R_d_i = x_d_i_info['R_d']
+                cropped_output, full_output = self._process_frame(
+                    source_frame, driving_frame, frame_index, config, driving_landmarks
+                )
 
-            if i == 0:
-                R_d_0 = R_d_i
-                x_d_0_info = x_d_i_info
+                cropped_outputs.append(cropped_output)
+                full_outputs.append(full_output)
 
-            if inference_cfg.flag_relative:
-                R_new = (R_d_i @ R_d_0.permute(0, 2, 1)) @ R_s
-                delta_new = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp'])
-                scale_new = x_s_info['scale'] * (x_d_i_info['scale'] / x_d_0_info['scale'])
-                t_new = x_s_info['t'] + (x_d_i_info['t'] - x_d_0_info['t'])
-            else:
-                R_new = R_d_i
-                delta_new = x_d_i_info['exp']
-                scale_new = x_s_info['scale']
-                t_new = x_d_i_info['t']
+                progress_bar.update(1)
+            except Exception as e:
+                logger.error(f"Error processing frame {frame_index}: {str(e)}")
+                raise
 
-            t_new[..., 2].fill_(0) # zero tz
-            x_d_i_new = scale_new * (x_c_s @ R_new + delta_new) + t_new
+        return cropped_outputs, full_outputs
 
-            # Algorithm 1:
-            if not inference_cfg.flag_stitching and not inference_cfg.flag_eye_retargeting and not inference_cfg.flag_lip_retargeting:
-                # without stitching or retargeting
-                if inference_cfg.flag_lip_zero:
-                    x_d_i_new += lip_delta_before_animation.reshape(-1, x_s.shape[1], 3)
-                else:
-                    pass
-            elif inference_cfg.flag_stitching and not inference_cfg.flag_eye_retargeting and not inference_cfg.flag_lip_retargeting:
-                # with stitching and without retargeting
-                if inference_cfg.flag_lip_zero:
-                    x_d_i_new = self.live_portrait_wrapper.stitching(x_s, x_d_i_new) + lip_delta_before_animation.reshape(-1, x_s.shape[1], 3)
-                else:
-                    x_d_i_new = self.live_portrait_wrapper.stitching(x_s, x_d_i_new)
-            else:
-                eyes_delta, lip_delta = None, None
-                if inference_cfg.flag_eye_retargeting:
-                    c_d_eyes_i = input_eye_ratio_lst[i]
-                    combined_eye_ratio_tensor = self.live_portrait_wrapper.calc_combined_eye_ratio(c_d_eyes_i, source_lmk)
-                    combined_eye_ratio_tensor = combined_eye_ratio_tensor * inference_cfg.eyes_retargeting_multiplier
-                    # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
-                    eyes_delta = self.live_portrait_wrapper.retarget_eye(x_s, combined_eye_ratio_tensor)
-                if inference_cfg.flag_lip_retargeting:
-                    c_d_lip_i = input_lip_ratio_lst[i]
-                    combined_lip_ratio_tensor = self.live_portrait_wrapper.calc_combined_lip_ratio(c_d_lip_i, source_lmk)
-                    combined_lip_ratio_tensor = combined_lip_ratio_tensor * inference_cfg.lip_retargeting_multiplier
-                    # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
-                    lip_delta = self.live_portrait_wrapper.retarget_lip(x_s, combined_lip_ratio_tensor)
+    def _get_driving_landmarks(self, driving_images: np.ndarray, config) -> list:
+        if config.flag_eye_retargeting or config.flag_lip_retargeting:
+            return self.cropper.get_retargeting_lmk_info(driving_images)
+        return []
 
-                if inference_cfg.flag_relative:  # use x_s
-                    x_d_i_new = x_s + \
-                        (eyes_delta.reshape(-1, x_s.shape[1], 3) if eyes_delta is not None else 0) + \
-                        (lip_delta.reshape(-1, x_s.shape[1], 3) if lip_delta is not None else 0)
-                else:  # use x_d,i
-                    x_d_i_new = x_d_i_new + \
-                        (eyes_delta.reshape(-1, x_s.shape[1], 3) if eyes_delta is not None else 0) + \
-                        (lip_delta.reshape(-1, x_s.shape[1], 3) if lip_delta is not None else 0)
+    def _process_frame(
+        self,
+        source_frame: np.ndarray,
+        driving_frame: np.ndarray,
+        frame_index: int,
+        config,
+        driving_landmarks: list,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        crop_info = self.cropper.crop_single_image(source_frame)
+        source_landmarks = crop_info["lmk_crop"]
+        cropped_source = (
+            crop_info["img_crop_256x256"] if config.flag_do_crop else source_frame
+        )
 
-                if inference_cfg.flag_stitching:
-                    x_d_i_new = self.live_portrait_wrapper.stitching(x_s, x_d_i_new)
+        source_features = self._extract_source_features(cropped_source)
+        driving_features = self._extract_driving_features(driving_frame)
 
-            out = self.live_portrait_wrapper.warp_decode(f_s, x_s, x_d_i_new)
-            I_p_i = self.live_portrait_wrapper.parse_output(out['out'])[0]
-            I_p_lst.append(I_p_i)
-            pbar.update(1)
+        keypoints = self._compute_keypoints(
+            source_features, driving_features, frame_index, config
+        )
 
-            #if inference_cfg.flag_pasteback:
-            I_p_i_to_ori = _transform_img(I_p_i, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
-            I_p_i_to_ori_blend = np.clip(mask_ori * I_p_i_to_ori + (1 - mask_ori) * img_rgb, 0, 255).astype(np.uint8)
-            out = np.hstack([I_p_i_to_ori, I_p_i_to_ori_blend])
-            I_p_paste_lst.append(I_p_i_to_ori_blend)
+        if config.flag_eye_retargeting or config.flag_lip_retargeting:
+            keypoints = self._apply_retargeting(
+                keypoints, source_landmarks, driving_landmarks, frame_index, config
+            )
 
-        return I_p_lst, I_p_paste_lst
+        warped_output = self._warp_and_decode(source_features, keypoints)
+
+        cropped_output = self.live_portrait_wrapper.parse_output(warped_output["out"])[
+            0
+        ]
+        full_output = self._transform_and_blend(
+            cropped_output, source_frame, crop_info, config
+        )
+
+        return cropped_output, full_output
+
+    def _extract_source_features(self, source_image: np.ndarray):
+        prepared_source = self.live_portrait_wrapper.prepare_source(source_image)
+        kp_src_info = self.live_portrait_wrapper.get_kp_info(prepared_source)
+        feature_3d = self.live_portrait_wrapper.extract_feature_3d(prepared_source)
+        return {
+            "prepared": prepared_source,
+            "keypoints": kp_src_info,
+            "feature_3d": feature_3d,
+            "transformed_kp": self.live_portrait_wrapper.transform_keypoint(
+                kp_src_info
+            ),
+        }
+
+    def _extract_driving_features(self, driving_frame: np.ndarray):
+        driving_frame_resized = cv2.resize(driving_frame, (256, 256))
+        prepared_driving = self.live_portrait_wrapper.prepare_driving_videos(
+            [driving_frame_resized]
+        )[0]
+        return self.live_portrait_wrapper.get_kp_info(prepared_driving)
+
+    def _compute_keypoints(
+        self, source_features, driving_features, frame_index: int, config
+    ):
+        if frame_index == 0:
+            self.initial_rotation = get_rotation_matrix(
+                driving_features["pitch"],
+                driving_features["yaw"],
+                driving_features["roll"],
+            )
+            self.initial_keypoints = driving_features
+
+        if config.flag_relative:
+            return self._compute_relative_keypoints(source_features, driving_features)
+        return self._compute_absolute_keypoints(source_features, driving_features)
+
+    def _compute_relative_keypoints(self, source_features, driving_features):
+        R_new = (
+            get_rotation_matrix(
+                driving_features["pitch"],
+                driving_features["yaw"],
+                driving_features["roll"],
+            )
+            @ self.initial_rotation.permute(0, 2, 1)
+        ) @ get_rotation_matrix(
+            source_features["keypoints"]["pitch"],
+            source_features["keypoints"]["yaw"],
+            source_features["keypoints"]["roll"],
+        )
+        delta_new = source_features["keypoints"]["exp"] + (
+            driving_features["exp"] - self.initial_keypoints["exp"]
+        )
+        scale_new = source_features["keypoints"]["scale"] * (
+            driving_features["scale"] / self.initial_keypoints["scale"]
+        )
+        t_new = source_features["keypoints"]["t"] + (
+            driving_features["t"] - self.initial_keypoints["t"]
+        )
+        t_new[..., 2].fill_(0)  # zero tz
+        return (
+            scale_new * (source_features["keypoints"]["kp"] @ R_new + delta_new) + t_new
+        )
+
+    def _compute_absolute_keypoints(self, source_features, driving_features):
+        R_new = get_rotation_matrix(
+            driving_features["pitch"], driving_features["yaw"], driving_features["roll"]
+        )
+        t_new = driving_features["t"]
+        t_new[..., 2].fill_(0)  # zero tz
+        return (
+            source_features["keypoints"]["scale"]
+            * (source_features["keypoints"]["kp"] @ R_new + driving_features["exp"])
+            + t_new
+        )
+
+    def _apply_retargeting(
+        self, keypoints, source_landmarks, driving_landmarks, frame_index: int, config
+    ):
+        if config.flag_eye_retargeting:
+            keypoints = self._apply_eye_retargeting(
+                keypoints, source_landmarks, driving_landmarks, frame_index, config
+            )
+        if config.flag_lip_retargeting:
+            keypoints = self._apply_lip_retargeting(
+                keypoints, source_landmarks, driving_landmarks, frame_index, config
+            )
+        return keypoints
+
+    def _apply_eye_retargeting(
+        self, keypoints, source_landmarks, driving_landmarks, frame_index: int, config
+    ):
+        eye_ratio = self.live_portrait_wrapper.calc_retargeting_ratio(
+            source_landmarks, driving_landmarks
+        )[0][frame_index]
+        combined_eye_ratio = self.live_portrait_wrapper.calc_combined_eye_ratio(
+            eye_ratio, source_landmarks
+        )
+        eye_delta = self.live_portrait_wrapper.retarget_eye(
+            keypoints, combined_eye_ratio * config.eyes_retargeting_multiplier
+        )
+        return keypoints + eye_delta.reshape(-1, keypoints.shape[1], 3)
+
+    def _apply_lip_retargeting(
+        self, keypoints, source_landmarks, driving_landmarks, frame_index: int, config
+    ):
+        lip_ratio = self.live_portrait_wrapper.calc_retargeting_ratio(
+            source_landmarks, driving_landmarks
+        )[1][frame_index]
+        combined_lip_ratio = self.live_portrait_wrapper.calc_combined_lip_ratio(
+            lip_ratio, source_landmarks
+        )
+        lip_delta = self.live_portrait_wrapper.retarget_lip(
+            keypoints, combined_lip_ratio * config.lip_retargeting_multiplier
+        )
+        return keypoints + lip_delta.reshape(-1, keypoints.shape[1], 3)
+
+    def _warp_and_decode(self, source_features, keypoints):
+        if self.live_portrait_wrapper.cfg.flag_stitching:
+            keypoints = self.live_portrait_wrapper.stitching(
+                source_features["transformed_kp"], keypoints
+            )
+        return self.live_portrait_wrapper.warp_decode(
+            source_features["feature_3d"], source_features["transformed_kp"], keypoints
+        )
+
+    def _transform_and_blend(
+        self,
+        cropped_output: np.ndarray,
+        source_frame: np.ndarray,
+        crop_info: dict,
+        config,
+    ) -> np.ndarray:
+        full_output = _transform_img(
+            cropped_output,
+            crop_info["M_c2o"],
+            dsize=(source_frame.shape[1], source_frame.shape[0]),
+        )
+
+        if config.flag_pasteback:
+            if config.mask_crop is None:
+                config.mask_crop = cv2.imread(
+                    make_abs_path("./utils/resources/mask_template.png"),
+                    cv2.IMREAD_COLOR,
+                )
+            mask = (
+                _transform_img(
+                    config.mask_crop,
+                    crop_info["M_c2o"],
+                    dsize=(source_frame.shape[1], source_frame.shape[0]),
+                ).astype(np.float32)
+                / 255.0
+            )
+            return np.clip(
+                mask * full_output + (1 - mask) * source_frame, 0, 255
+            ).astype(np.uint8)
+
+        return full_output

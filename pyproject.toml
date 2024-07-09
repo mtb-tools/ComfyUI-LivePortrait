@@ -13,3 +13,7 @@ Repository = "https://github.com/kijai/ComfyUI-LivePortraitKJ"
 PublisherId = "kijai"
 DisplayName = "ComfyUI-LivePortraitKJ"
 Icon = ""
+
+
+[tool.pyright]
+typeCheckingMode = "basic"
