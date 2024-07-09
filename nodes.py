@@ -98,7 +98,7 @@ class DownloadAndLoadLivePortraitModels:
         device = mm.get_torch_device()
         mm.soft_empty_cache()
 
-        pbar = comfy.utils.ProgressBar(3)
+        pbar = comfy.utils.ProgressBar(5)
 
         if not models_dir.exists():
             print(f"Downloading model to: {models_dir}")
@@ -127,43 +127,43 @@ class DownloadAndLoadLivePortraitModels:
         model_params = model_config["model_params"][
             "appearance_feature_extractor_params"
         ]
-        self.appearance_feature_extractor = AppearanceFeatureExtractor(
-            **model_params
-        ).to(device)
-        self.appearance_feature_extractor.load_state_dict(
+        appearance_feature_extractor = AppearanceFeatureExtractor(**model_params).to(
+            device
+        )
+        appearance_feature_extractor.load_state_dict(
             comfy.utils.load_torch_file(feature_extractor_path.as_posix())
         )
-        self.appearance_feature_extractor.eval()
+        appearance_feature_extractor.eval()
         print("Load appearance_feature_extractor done.")
         pbar.update(1)
 
         # NOTE: MOTION EXTRACTION
         model_params = model_config["model_params"]["motion_extractor_params"]
-        self.motion_extractor = MotionExtractor(**model_params).to(device)
-        self.motion_extractor.load_state_dict(
+        motion_extractor = MotionExtractor(**model_params).to(device)
+        motion_extractor.load_state_dict(
             comfy.utils.load_torch_file(motion_extractor_path.as_posix())
         )
-        self.motion_extractor.eval()
+        motion_extractor.eval()
         print("Load motion_extractor done.")
         pbar.update(1)
 
         # NOTE: WRAPPING
         model_params = model_config["model_params"]["warping_module_params"]
-        self.warping_module = WarpingNetwork(**model_params).to(device)
-        self.warping_module.load_state_dict(
+        warping_module = WarpingNetwork(**model_params).to(device)
+        warping_module.load_state_dict(
             comfy.utils.load_torch_file(warping_module_path.as_posix())
         )
-        self.warping_module.eval()
+        warping_module.eval()
         print("Load warping_module done.")
         pbar.update(1)
 
         # NOTE: SPADE
         model_params = model_config["model_params"]["spade_generator_params"]
-        self.spade_generator = SPADEDecoder(**model_params).to(device)
-        self.spade_generator.load_state_dict(
+        spade_generator = SPADEDecoder(**model_params).to(device)
+        spade_generator.load_state_dict(
             comfy.utils.load_torch_file(spade_generator_path.as_posix())
         )
-        self.spade_generator.eval()
+        spade_generator.eval()
         print("Load spade_generator done.")
         pbar.update(1)
 
@@ -202,23 +202,25 @@ class DownloadAndLoadLivePortraitModels:
         retargetor_eye.eval()
         print("Load stitching_retargeting_module done.")
 
-        self.stich_retargeting_module = {
+        stich_retargeting_module = {
             "stitching": stitcher,
             "lip": retargetor_lip,
             "eye": retargetor_eye,
         }
 
         pipeline = LivePortraitPipeline(
-            self.appearance_feature_extractor,
-            self.motion_extractor,
-            self.warping_module,
-            self.spade_generator,
-            self.stich_retargeting_module,
+            appearance_feature_extractor,
+            motion_extractor,
+            warping_module,
+            spade_generator,
+            stich_retargeting_module,
             InferenceConfig(
                 device_id=device,
                 flag_use_half_precision=True if precision == "fp16" else False,
             ),
         )
+
+        pbar.update(1)
 
         return (pipeline,)
 
