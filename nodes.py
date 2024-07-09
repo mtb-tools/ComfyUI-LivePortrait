@@ -5,6 +5,7 @@ import folder_paths
 import comfy.model_management as mm
 import comfy.utils
 from .liveportrait.live_portrait_pipeline import LivePortraitPipeline
+from .liveportrait.config.crop_config import CropConfig
 from .liveportrait.utils.cropper import Cropper
 from .liveportrait.modules.spade_generator import SPADEDecoder
 from .liveportrait.modules.warping_network import WarpingNetwork
@@ -70,46 +71,6 @@ class InferenceConfig:
         self.flag_do_crop = flag_do_crop
         self.flag_do_rot = flag_do_rot
         self.mask_crop = mask_crop
-
-
-class CropConfig:
-    def __init__(self, dsize=512, scale=1.6, vx_ratio=0, vy_ratio=-0.125):
-        self.dsize = dsize
-        self.scale = scale
-        self.vx_ratio = vx_ratio
-        self.vy_ratio = vy_ratio
-
-
-class ArgumentConfig:
-    def __init__(
-        self,
-        device_id=0,
-        flag_lip_zero=True,
-        flag_eye_retargeting=False,
-        flag_lip_retargeting=False,
-        flag_stitching=True,
-        flag_relative=True,
-        flag_pasteback=True,
-        flag_do_crop=True,
-        flag_do_rot=True,
-        dsize=512,
-        scale=1.6,
-        vx_ratio=0,
-        vy_ratio=-0.125,
-    ):
-        self.device_id = device_id
-        self.flag_lip_zero = flag_lip_zero
-        self.flag_eye_retargeting = flag_eye_retargeting
-        self.flag_lip_retargeting = flag_lip_retargeting
-        self.flag_stitching = flag_stitching
-        self.flag_relative = flag_relative
-        self.flag_pasteback = flag_pasteback
-        self.flag_do_crop = flag_do_crop
-        self.flag_do_rot = flag_do_rot
-        self.dsize = dsize
-        self.scale = scale
-        self.vx_ratio = vx_ratio
-        self.vy_ratio = vy_ratio
 
 
 class DownloadAndLoadLivePortraitModels:
